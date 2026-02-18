@@ -91,25 +91,43 @@ class AuthManager:
                 await page.goto("https://wx.zsxq.com", timeout=30000)
                 await asyncio.sleep(3)
 
-                # 用JS点击切换到二维码登录（避免元素遮挡）
-                await page.evaluate("""
-                    const btn = document.querySelector('.get-qr-btn') || document.querySelector('.qr-code-icon');
-                    if (btn) btn.click();
-                """)
-                await asyncio.sleep(3)
+                # 2. 点击"获取登录二维码"按钮
+                get_qr_btn = await page.query_selector("button.get-qr-btn")
+                if get_qr_btn:
+                    logger.info("点击'获取登录二维码'按钮...")
+                    await get_qr_btn.click(force=True)
+                    await asyncio.sleep(2)
 
+                # 3. 处理用户协议弹窗 - 点击"同意"
+                agree_btn = await page.query_selector(
+                    "button:has-text('同意'):not(:has-text('不同意'))"
+                )
+                if agree_btn:
+                    logger.info("点击'同意'用户协议...")
+                    await agree_btn.click(force=True)
+                    await asyncio.sleep(3)
+
+                # 4. 等待二维码出现（可能是 img 或 canvas）
                 await page.wait_for_selector(
-                    ".qrcode-container, .qr-code-area",
+                    "img[class*='qr'], canvas, .qrcode-img, .qr-code-area img",
                     timeout=15000,
                 )
+                await asyncio.sleep(2)
 
-                # 2. 截图二维码
+                # 5. 截图二维码区域
+                # 优先截取二维码容器
                 qr_element = await page.query_selector(
                     ".qrcode-container, .qr-code-area"
                 )
+                if not qr_element:
+                    qr_element = await page.query_selector(
+                        "img[class*='qr'], canvas"
+                    )
+
                 if qr_element:
                     qr_image = await qr_element.screenshot()
                 else:
+                    logger.warning("未找到二维码元素，截取整页")
                     qr_image = await page.screenshot()
 
                 # 3. 发送到企业微信
