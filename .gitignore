@@ -1,0 +1,8 @@
+.env
+data/cookie.json
+output/*.xlsx
+output/*.csv
+logs/*.log
+__pycache__/
+*.pyc
+.venv/
