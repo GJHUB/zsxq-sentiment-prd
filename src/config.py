@@ -17,6 +17,7 @@ CONFIG = {
     # AI API
     "anthropic_api_key": os.getenv("ANTHROPIC_API_KEY", ""),
     "openai_api_key": os.getenv("OPENAI_API_KEY", ""),
+    "openai_api_base": os.getenv("OPENAI_API_BASE", "https://api.openai.com/v1"),
     "ai_model": "claude-3-sonnet-20240229",
     "batch_size": 5,
 

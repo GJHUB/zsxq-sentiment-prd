@@ -226,7 +226,10 @@ class SentimentAnalyzer:
         """调用OpenAI API"""
         from openai import OpenAI
 
-        client = OpenAI(api_key=self.openai_api_key)
+        client = OpenAI(
+            api_key=self.openai_api_key,
+            base_url=get_config("openai_api_base", "https://api.openai.com/v1"),
+        )
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[{"role": "user", "content": prompt}],
