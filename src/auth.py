@@ -107,22 +107,15 @@ class AuthManager:
                     await agree_btn.click(force=True)
                     await asyncio.sleep(3)
 
-                # 4. 等待二维码出现（可能是 img 或 canvas）
+                # 4. 等待二维码容器出现
                 await page.wait_for_selector(
-                    "img[class*='qr'], canvas, .qrcode-img, .qr-code-area img",
+                    ".qrcode-container",
                     timeout=15000,
                 )
                 await asyncio.sleep(2)
 
                 # 5. 截图二维码区域
-                # 优先截取二维码容器
-                qr_element = await page.query_selector(
-                    ".qrcode-container, .qr-code-area"
-                )
-                if not qr_element:
-                    qr_element = await page.query_selector(
-                        "img[class*='qr'], canvas"
-                    )
+                qr_element = await page.query_selector(".qrcode-container")
 
                 if qr_element:
                     qr_image = await qr_element.screenshot()
@@ -146,9 +139,13 @@ class AuthManager:
                 while time.time() - start_time < timeout:
                     current_url = page.url
                     if "feed" in current_url or "group" in current_url:
-                        # 5. 提取Cookie
-                        cookies = await page.context.cookies()
+                        # 5. 提取所有zsxq相关Cookie
+                        cookies = await page.context.cookies(
+                            ["https://wx.zsxq.com", "https://api.zsxq.com"]
+                        )
                         cookie_dict = {c["name"]: c["value"] for c in cookies}
+                        logger.info("获取到 %d 个Cookie字段: %s",
+                                    len(cookie_dict), list(cookie_dict.keys()))
                         self.save_cookie(cookie_dict)
                         logger.info("扫码登录成功")
                         return True

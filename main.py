@@ -1,5 +1,6 @@
 """知识星球股票舆情分析器 - 主入口"""
 
+import argparse
 import asyncio
 import logging
 import sys
@@ -34,6 +35,11 @@ def setup_logging():
 
 async def main():
     """主运行流程"""
+    parser = argparse.ArgumentParser(description="知识星球股票舆情分析器")
+    parser.add_argument("--start-date", type=str, help="起始日期 YYYY-MM-DD")
+    parser.add_argument("--end-date", type=str, help="结束日期 YYYY-MM-DD（默认今天）")
+    args = parser.parse_args()
+
     setup_logging()
     logger = logging.getLogger(__name__)
     logger.info("=== 知识星球舆情分析开始 ===")
@@ -58,11 +64,20 @@ async def main():
             group_id=get_config("group_id"),
             cookie=cookie,
         )
-        topics = await crawler.fetch_all_today()
+
+        if args.start_date:
+            # 日期范围模式
+            end_date = args.end_date or datetime.now().strftime("%Y-%m-%d")
+            topics = await crawler.fetch_date_range(args.start_date, end_date)
+            date_label = f"{args.start_date}_to_{end_date}"
+        else:
+            # 默认今日模式
+            topics = await crawler.fetch_all_today()
+            date_label = datetime.now().strftime("%Y-%m-%d")
 
         if not topics:
-            notifier.send_text("📭 今日暂无新内容")
-            logger.info("今日暂无新内容")
+            notifier.send_text("📭 指定日期范围内暂无新内容")
+            logger.info("指定日期范围内暂无新内容")
             return
 
         logger.info("获取到 %d 条帖子", len(topics))
@@ -81,22 +96,17 @@ async def main():
 
         # 5. 生成报告
         reporter = ReportGenerator()
-        today = datetime.now().strftime("%Y-%m-%d")
-        report_path = reporter.generate(analysis, topics, date=today)
+        report_path = reporter.generate(analysis, topics, date=date_label)
 
         # 6. 统计信息
-        stock_count = analysis["stock"].nunique()
-        bullish_count = len(analysis[analysis["sentiment"] == "bullish"])
-        bearish_count = len(analysis[analysis["sentiment"] == "bearish"])
+        financial_count = len(analysis[analysis["is_financial"] == True]) if not analysis.empty else 0
 
         # 7. 发送结果
         summary = (
             f"📊 舆情分析完成\n\n"
-            f"📅 日期: {today}\n"
+            f"📅 日期: {date_label}\n"
             f"📝 帖子数: {len(topics)}\n"
-            f"📈 涉及股票: {stock_count} 只\n"
-            f"🟢 看多: {bullish_count} 条\n"
-            f"🔴 看空: {bearish_count} 条\n"
+            f"💰 财经相关: {financial_count} 条\n"
             f"📄 报告: {report_path}"
         )
         notifier.send_text(summary)

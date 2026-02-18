@@ -199,6 +199,69 @@ class ZsxqCrawler:
             logger.error("获取评论失败 [%s]: %s", topic_id, e)
             return []
 
+    async def fetch_date_range(self, start_date: str, end_date: str = None) -> list[dict]:
+        """获取日期范围内的所有内容（帖子+评论）"""
+        end_date = end_date or datetime.now().strftime("%Y-%m-%d")
+        logger.info("开始获取 %s 至 %s 的内容...", start_date, end_date)
+
+        start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+        end_dt = datetime.strptime(end_date, "%Y-%m-%d") + timedelta(days=1)
+
+        all_topics = []
+        url = f"{self.BASE_URL}/groups/{self.group_id}/topics"
+        params = {"scope": "all", "count": 20}
+
+        page = 0
+        while True:
+            page += 1
+            await self.rate_limiter.wait()
+            logger.info("获取帖子列表第%d页...", page)
+
+            try:
+                data = self._fetch(url, params)
+            except Exception as e:
+                logger.error("获取帖子列表失败: %s", e)
+                break
+
+            resp_data = data.get("resp_data", {})
+            topics = resp_data.get("topics", [])
+
+            if not topics:
+                break
+
+            for topic in topics:
+                create_time_str = topic.get("create_time", "")
+                try:
+                    create_time = datetime.strptime(
+                        create_time_str, "%Y-%m-%dT%H:%M:%S.%f%z"
+                    )
+                    create_time_naive = create_time.replace(tzinfo=None)
+                except (ValueError, TypeError):
+                    continue
+
+                if start_dt <= create_time_naive < end_dt:
+                    all_topics.append(self._parse_topic(topic))
+                elif create_time_naive < start_dt:
+                    logger.info("已到达起始日期之前，停止翻页")
+                    # 获取评论
+                    return await self._fetch_comments_for_topics(all_topics)
+
+            last_topic = topics[-1]
+            params["end_time"] = last_topic.get("create_time", "")
+
+        return await self._fetch_comments_for_topics(all_topics)
+
+    async def _fetch_comments_for_topics(self, topics: list[dict]) -> list[dict]:
+        """为帖子列表获取评论"""
+        logger.info("获取到 %d 条帖子，开始获取评论...", len(topics))
+        for topic in topics:
+            topic_id = topic.get("topic_id")
+            if topic_id:
+                comments = await self.fetch_comments(topic_id)
+                topic["comments"] = comments
+                await asyncio.sleep(random.uniform(1, 3))
+        return topics
+
     async def fetch_all_today(self) -> list[dict]:
         """获取今日所有内容（帖子+评论）"""
         today = datetime.now().strftime("%Y-%m-%d")

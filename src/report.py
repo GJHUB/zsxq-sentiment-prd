@@ -7,23 +7,16 @@ from datetime import datetime
 import pandas as pd
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
-from openpyxl.utils.dataframe import dataframe_to_rows
 
 from .config import get_config
 
 logger = logging.getLogger(__name__)
 
-# 情绪颜色映射
-SENTIMENT_COLORS = {
-    "bullish": "C6EFCE",   # 绿色 - 看多
-    "bearish": "FFC7CE",   # 红色 - 看空
-    "neutral": "FFEB9C",   # 黄色 - 中性
-}
-
-SENTIMENT_LABELS = {
-    "bullish": "看多",
-    "bearish": "看空",
-    "neutral": "中性",
+OUTLOOK_COLORS = {
+    "看多": "C6EFCE",
+    "看空": "FFC7CE",
+    "中性": "FFEB9C",
+    "分歧": "B4C6E7",
 }
 
 
@@ -42,8 +35,8 @@ class ReportGenerator:
     ) -> str:
         """
         生成Excel报告
-        - Sheet1: 股票汇总
-        - Sheet2: 评论明细
+        - Sheet1: 财经相关帖子分析
+        - Sheet2: 全部帖子概览
         返回文件路径
         """
         date = date or datetime.now().strftime("%Y-%m-%d")
@@ -52,8 +45,8 @@ class ReportGenerator:
 
         try:
             wb = Workbook()
-            self._create_summary_sheet(wb, analysis, date)
-            self._create_detail_sheet(wb, analysis)
+            self._create_financial_sheet(wb, analysis)
+            self._create_overview_sheet(wb, analysis)
             self._apply_styles(wb)
             wb.save(filepath)
             logger.info("报告已生成: %s", filepath)
@@ -62,87 +55,72 @@ class ReportGenerator:
             logger.error("Excel生成失败，降级到CSV: %s", e)
             return self._fallback_csv(analysis, date)
 
-    def _create_summary_sheet(
-        self, wb: Workbook, df: pd.DataFrame, date: str
-    ) -> None:
-        """创建股票汇总Sheet"""
+    def _create_financial_sheet(self, wb: Workbook, df: pd.DataFrame) -> None:
+        """创建财经分析Sheet（仅财经相关帖子）"""
         ws = wb.active
-        ws.title = "股票汇总"
+        ws.title = "财经分析"
 
-        if df.empty:
-            ws.append(["暂无数据"])
-            return
-
-        # 按股票分组统计
-        summary_data = []
-        for stock, group in df.groupby("stock"):
-            total = len(group)
-            bullish = len(group[group["sentiment"] == "bullish"])
-            bearish = len(group[group["sentiment"] == "bearish"])
-            neutral = len(group[group["sentiment"] == "neutral"])
-            ratio = f"{bullish}:{bearish}" if bearish > 0 else f"{bullish}:0"
-            avg_conf = group["confidence"].mean()
-
-            # 生成AI总结
-            reasons = group["reason"].dropna().tolist()
-            ai_summary = "；".join(r for r in reasons[:3] if r)
-
-            summary_data.append({
-                "股票代码": stock,
-                "提及次数": total,
-                "看多": bullish,
-                "看空": bearish,
-                "中性": neutral,
-                "多空比": ratio,
-                "平均置信度": round(avg_conf, 2),
-                "AI总结": ai_summary or "无",
-            })
-
-        summary_df = pd.DataFrame(summary_data)
-        summary_df = summary_df.sort_values("提及次数", ascending=False)
-
-        # 写入标题行
-        headers = list(summary_df.columns)
+        headers = ["时间", "作者", "金融产品", "具体标的", "看法", "原因分析", "核心观点", "帖子摘要"]
         ws.append(headers)
 
-        # 写入数据
-        for _, row in summary_df.iterrows():
-            ws.append(list(row))
+        if df.empty:
+            ws.append(["暂无数据"])
+            return
 
-    def _create_detail_sheet(self, wb: Workbook, df: pd.DataFrame) -> None:
-        """创建评论明细Sheet"""
-        ws = wb.create_sheet("评论明细")
+        financial_df = df[df["is_financial"] == True].copy()
+        if financial_df.empty:
+            ws.append(["无财经相关内容"])
+            return
+
+        for _, row in financial_df.iterrows():
+            targets = row.get("targets", [])
+            if isinstance(targets, list):
+                targets_str = "、".join(str(t) for t in targets)
+            else:
+                targets_str = str(targets)
+
+            ws.append([
+                str(row.get("create_time", ""))[:19],
+                row.get("author", ""),
+                row.get("product_type", ""),
+                targets_str,
+                row.get("outlook", ""),
+                row.get("reason", ""),
+                row.get("summary", ""),
+                row.get("post_excerpt", "")[:200],
+            ])
+
+    def _create_overview_sheet(self, wb: Workbook, df: pd.DataFrame) -> None:
+        """创建全部帖子概览Sheet"""
+        ws = wb.create_sheet("全部帖子")
+
+        headers = ["时间", "作者", "是否财经", "金融产品", "具体标的", "看法", "核心观点", "评论数"]
+        ws.append(headers)
 
         if df.empty:
             ws.append(["暂无数据"])
             return
 
-        # 准备明细数据
-        detail_df = df.copy()
-        detail_df["情绪"] = detail_df["sentiment"].map(
-            lambda x: SENTIMENT_LABELS.get(x, x)
-        )
-        detail_df = detail_df.rename(columns={
-            "create_time": "时间",
-            "author": "作者",
-            "text_excerpt": "内容摘要",
-            "stock": "提及股票",
-            "confidence": "置信度",
-            "reason": "判断依据",
-        })
+        for _, row in df.iterrows():
+            targets = row.get("targets", [])
+            if isinstance(targets, list):
+                targets_str = "、".join(str(t) for t in targets)
+            else:
+                targets_str = str(targets)
 
-        columns = ["时间", "作者", "内容摘要", "提及股票", "情绪", "置信度", "判断依据"]
-        available_cols = [c for c in columns if c in detail_df.columns]
-
-        # 写入标题行
-        ws.append(available_cols)
-
-        # 写入数据
-        for _, row in detail_df.iterrows():
-            ws.append([row.get(c, "") for c in available_cols])
+            ws.append([
+                str(row.get("create_time", ""))[:19],
+                row.get("author", ""),
+                "是" if row.get("is_financial") else "否",
+                row.get("product_type", ""),
+                targets_str,
+                row.get("outlook", ""),
+                row.get("summary", ""),
+                row.get("comments_count", 0),
+            ])
 
     def _apply_styles(self, wb: Workbook) -> None:
-        """应用样式：表头加粗、列宽、条件格式等"""
+        """应用样式"""
         header_font = Font(bold=True, size=11, color="FFFFFF")
         header_fill = PatternFill(
             start_color="4472C4", end_color="4472C4", fill_type="solid"
@@ -156,65 +134,49 @@ class ReportGenerator:
         )
 
         for ws in wb.worksheets:
-            # 表头样式
             for cell in ws[1]:
                 cell.font = header_font
                 cell.fill = header_fill
                 cell.alignment = header_alignment
                 cell.border = thin_border
 
-            # 数据行样式
             for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
                 for cell in row:
                     cell.border = thin_border
-                    cell.alignment = Alignment(
-                        vertical="center", wrap_text=True
-                    )
+                    cell.alignment = Alignment(vertical="center", wrap_text=True)
 
-            # 自动列宽（近似）
+            # 自动列宽
             for col in ws.columns:
                 max_length = 0
                 col_letter = col[0].column_letter
                 for cell in col:
                     try:
                         val = str(cell.value or "")
-                        # 中文字符算2个宽度
                         length = sum(2 if ord(c) > 127 else 1 for c in val)
                         max_length = max(max_length, length)
                     except Exception:
                         pass
-                adjusted_width = min(max_length + 4, 50)
-                ws.column_dimensions[col_letter].width = adjusted_width
+                ws.column_dimensions[col_letter].width = min(max_length + 4, 60)
 
-            # 情绪列条件着色
-            self._apply_sentiment_colors(ws)
+            # 看法列着色
+            self._apply_outlook_colors(ws)
 
-    def _apply_sentiment_colors(self, ws) -> None:
-        """为情绪列添加颜色"""
-        # 找到情绪列
+    def _apply_outlook_colors(self, ws) -> None:
+        """为看法列添加颜色"""
         header_row = [cell.value for cell in ws[1]]
-        sentiment_col = None
+        outlook_col = None
         for idx, h in enumerate(header_row):
-            if h in ("情绪", "sentiment"):
-                sentiment_col = idx
+            if h == "看法":
+                outlook_col = idx
                 break
 
-        if sentiment_col is None:
+        if outlook_col is None:
             return
 
         for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
-            cell = row[sentiment_col]
+            cell = row[outlook_col]
             val = str(cell.value or "")
-
-            # 匹配中文或英文
-            color = None
-            if val in ("看多", "bullish"):
-                color = SENTIMENT_COLORS["bullish"]
-            elif val in ("看空", "bearish"):
-                color = SENTIMENT_COLORS["bearish"]
-            elif val in ("中性", "neutral"):
-                color = SENTIMENT_COLORS["neutral"]
-
+            color = OUTLOOK_COLORS.get(val)
             if color:
                 cell.fill = PatternFill(
                     start_color=color, end_color=color, fill_type="solid"
