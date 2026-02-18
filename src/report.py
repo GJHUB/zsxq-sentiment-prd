@@ -60,7 +60,7 @@ class ReportGenerator:
         ws = wb.active
         ws.title = "财经分析"
 
-        headers = ["时间", "作者", "金融产品", "具体标的", "看法", "原因分析", "核心观点", "帖子摘要"]
+        headers = ["时间", "作者", "群主帖子", "金融产品", "具体标的", "看法", "群主看法", "群主理由", "原因分析", "核心观点", "帖子摘要"]
         ws.append(headers)
 
         if df.empty:
@@ -82,9 +82,12 @@ class ReportGenerator:
             ws.append([
                 str(row.get("create_time", ""))[:19],
                 row.get("author", ""),
+                "是" if row.get("is_owner_post") else "否",
                 row.get("product_type", ""),
                 targets_str,
                 row.get("outlook", ""),
+                row.get("owner_outlook", "无"),
+                row.get("owner_reason", "无"),
                 row.get("reason", ""),
                 row.get("summary", ""),
                 row.get("post_excerpt", "")[:200],
@@ -94,7 +97,7 @@ class ReportGenerator:
         """创建全部帖子概览Sheet"""
         ws = wb.create_sheet("全部帖子")
 
-        headers = ["时间", "作者", "是否财经", "金融产品", "具体标的", "看法", "核心观点", "评论数"]
+        headers = ["时间", "作者", "群主帖子", "是否财经", "金融产品", "具体标的", "看法", "群主看法", "核心观点", "评论数"]
         ws.append(headers)
 
         if df.empty:
@@ -111,10 +114,12 @@ class ReportGenerator:
             ws.append([
                 str(row.get("create_time", ""))[:19],
                 row.get("author", ""),
+                "是" if row.get("is_owner_post") else "否",
                 "是" if row.get("is_financial") else "否",
                 row.get("product_type", ""),
                 targets_str,
                 row.get("outlook", ""),
+                row.get("owner_outlook", "无"),
                 row.get("summary", ""),
                 row.get("comments_count", 0),
             ])

@@ -13,6 +13,9 @@ logger = logging.getLogger(__name__)
 
 ANALYSIS_PROMPT = """你是一个专业的财经分析师。请分析以下知识星球帖子及其评论内容。
 
+{owner_hint}
+
+帖子作者：{author}
 帖子内容：
 {post_text}
 
@@ -26,6 +29,7 @@ ANALYSIS_PROMPT = """你是一个专业的财经分析师。请分析以下知�
    - 具体标的（如果是股票，具体哪只股票及代码；如果是期货，具体哪个品种；如果是区块链，具体哪个币种）
    - 作者及评论者的整体看法（看多/看空/中性/分歧）
    - 具体原因和逻辑分析
+   - 如果群主（星球主理人）在帖子或评论中发表了观点，请单独提取群主的看法和理由（群主意见权重更高）
 
 请以JSON格式返回：
 {{
@@ -34,7 +38,9 @@ ANALYSIS_PROMPT = """你是一个专业的财经分析师。请分析以下知�
     "targets": ["具体标的1", "具体标的2"],
     "outlook": "看多/看空/中性/分歧/无",
     "reason": "具体原因和逻辑（简要概括）",
-    "summary": "一句话总结该帖子的核心观点"
+    "summary": "一句话总结该帖子的核心观点",
+    "owner_outlook": "看多/看空/中性/无（群主的看法，如果群主未发表观点则填无）",
+    "owner_reason": "群主的具体理由（如果群主未发表观点则填无）"
 }}
 
 只返回JSON，不要其他内容。如果不涉及财经话题，is_financial设为false，其他字段填"无"。"""
@@ -50,6 +56,7 @@ class SentimentAnalyzer:
     ):
         self.openai_api_key = openai_api_key or get_config("openai_api_key")
         self.anthropic_api_key = anthropic_api_key or get_config("anthropic_api_key")
+        self.owner_id = str(get_config("group_owner_id", ""))
 
     async def analyze_topics(self, topics: list[dict]) -> pd.DataFrame:
         """分析所有帖子，返回DataFrame"""
@@ -73,6 +80,14 @@ class SentimentAnalyzer:
             comments = topic.get("comments", [])
             all_text = post_text + " ".join(c.get("text", "") for c in comments)
 
+            # 判断是否群主帖子
+            is_owner = str(topic.get("author_id", "")) == self.owner_id
+
+            # 判断群主是否在评论中
+            owner_in_comments = any(
+                str(c.get("author_id", "")) == self.owner_id for c in comments
+            )
+
             # 预过滤：不含财经关键词的直接跳过
             has_keyword = any(kw in all_text for kw in finance_keywords)
             if not has_keyword:
@@ -83,6 +98,9 @@ class SentimentAnalyzer:
                     "outlook": "无",
                     "reason": "",
                     "summary": "非财经内容",
+                    "owner_outlook": "无",
+                    "owner_reason": "无",
+                    "is_owner_post": is_owner,
                     "author": topic.get("author", "未知"),
                     "create_time": topic.get("create_time", ""),
                     "post_excerpt": post_text[:300],
@@ -92,18 +110,32 @@ class SentimentAnalyzer:
 
             logger.info("分析第 %d/%d 条帖子（含财经关键词）...", i + 1, len(topics))
 
-            comments_text = "\n".join(
-                f"- {c.get('author', '匿名')}: {c.get('text', '')}"
-                for c in comments
-                if c.get("text")
-            ) or "（无评论）"
+            # 构建评论文本，标注群主评论
+            comments_lines = []
+            for c in comments:
+                prefix = "【群主】" if str(c.get("author_id", "")) == self.owner_id else ""
+                if c.get("text"):
+                    comments_lines.append(f"- {prefix}{c.get('author', '匿名')}: {c.get('text', '')}")
+            comments_text = "\n".join(comments_lines) or "（无评论）"
 
-            # 调用AI分析，加间隔避免打挂API
+            # 群主提示
+            if is_owner:
+                owner_hint = "⚠️ 注意：该帖子由群主（星球主理人）发布，群主观点权重更高。"
+            elif owner_in_comments:
+                owner_hint = "⚠️ 注意：群主（星球主理人）在评论中发表了观点，请特别关注群主评论（标注了【群主】），群主观点权重更高。"
+            else:
+                owner_hint = ""
+
+            # 调用AI分析
             import asyncio
             await asyncio.sleep(5)
 
             try:
-                analysis = await self._analyze_single(post_text, comments_text)
+                analysis = await self._analyze_single(
+                    post_text, comments_text,
+                    author=topic.get("author", "未知"),
+                    owner_hint=owner_hint,
+                )
             except Exception as e:
                 logger.error("分析帖子失败: %s", e)
                 analysis = {
@@ -113,9 +145,12 @@ class SentimentAnalyzer:
                     "outlook": "无",
                     "reason": f"分析失败: {e}",
                     "summary": "分析失败",
+                    "owner_outlook": "无",
+                    "owner_reason": "无",
                 }
 
             analysis.update({
+                "is_owner_post": is_owner,
                 "author": topic.get("author", "未知"),
                 "create_time": topic.get("create_time", ""),
                 "post_excerpt": post_text[:300],
@@ -128,11 +163,14 @@ class SentimentAnalyzer:
         logger.info("分析完成，共 %d 条帖子，其中 %d 条涉及财经", len(df), financial_count)
         return df
 
-    async def _analyze_single(self, post_text: str, comments_text: str) -> dict:
+    async def _analyze_single(self, post_text: str, comments_text: str,
+                              author: str = "未知", owner_hint: str = "") -> dict:
         """分析单个帖子"""
         prompt = ANALYSIS_PROMPT.format(
             post_text=post_text[:2000],
             comments_text=comments_text[:2000],
+            author=author,
+            owner_hint=owner_hint,
         )
         result = await self._call_ai_api(prompt)
         return self._parse_result(result)
@@ -197,6 +235,8 @@ class SentimentAnalyzer:
                     "outlook": data.get("outlook", "无"),
                     "reason": data.get("reason", ""),
                     "summary": data.get("summary", ""),
+                    "owner_outlook": data.get("owner_outlook", "无"),
+                    "owner_reason": data.get("owner_reason", "无"),
                 }
         except (json.JSONDecodeError, ValueError) as e:
             logger.warning("解析AI结果失败: %s", e)
@@ -208,4 +248,6 @@ class SentimentAnalyzer:
             "outlook": "无",
             "reason": "解析失败",
             "summary": "解析失败",
+            "owner_outlook": "无",
+            "owner_reason": "无",
         }

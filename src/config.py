@@ -13,6 +13,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 CONFIG = {
     # 知识星球
     "group_id": os.getenv("ZSXQ_GROUP_ID", ""),
+    "group_owner_id": os.getenv("ZSXQ_GROUP_OWNER_ID", "585551255484544"),
 
     # AI API
     "anthropic_api_key": os.getenv("ANTHROPIC_API_KEY", ""),
