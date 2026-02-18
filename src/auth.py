@@ -89,14 +89,23 @@ class AuthManager:
             try:
                 # 1. 打开登录页
                 await page.goto("https://wx.zsxq.com", timeout=30000)
+                await asyncio.sleep(3)
+
+                # 用JS点击切换到二维码登录（避免元素遮挡）
+                await page.evaluate("""
+                    const btn = document.querySelector('.get-qr-btn') || document.querySelector('.qr-code-icon');
+                    if (btn) btn.click();
+                """)
+                await asyncio.sleep(3)
+
                 await page.wait_for_selector(
-                    ".login-qrcode, .qrcode, img[class*='qr']",
+                    ".qrcode-container, .qr-code-area",
                     timeout=15000,
                 )
 
                 # 2. 截图二维码
                 qr_element = await page.query_selector(
-                    ".login-qrcode, .qrcode, img[class*='qr']"
+                    ".qrcode-container, .qr-code-area"
                 )
                 if qr_element:
                     qr_image = await qr_element.screenshot()
