@@ -294,10 +294,22 @@ class ZsxqCrawler:
 
         owner = topic.get("owner", {}) or {}
 
+        # 提取图片URL
+        images = []
+        for img in talk.get("images", []) or []:
+            url = img.get("large", {}).get("url", "") or img.get("original", {}).get("url", "") or img.get("thumbnail", {}).get("url", "")
+            if url:
+                images.append(url)
+        for img in question.get("images", []) or []:
+            url = img.get("large", {}).get("url", "") or img.get("original", {}).get("url", "") or img.get("thumbnail", {}).get("url", "")
+            if url:
+                images.append(url)
+
         return {
             "topic_id": str(topic.get("topic_id", "")),
             "type": topic.get("type", ""),
             "text": text.strip(),
+            "images": images,
             "author": owner.get("name", "未知"),
             "author_id": str(owner.get("user_id", "")),
             "create_time": topic.get("create_time", ""),
@@ -310,9 +322,18 @@ class ZsxqCrawler:
     def _parse_comment(comment: dict) -> dict:
         """解析评论数据"""
         owner = comment.get("owner", {}) or {}
+
+        # 提取评论图片
+        images = []
+        for img in comment.get("images", []) or []:
+            url = img.get("large", {}).get("url", "") or img.get("original", ).get("url", "") or img.get("thumbnail", {}).get("url", "")
+            if url:
+                images.append(url)
+
         return {
             "comment_id": str(comment.get("comment_id", "")),
             "text": comment.get("text", ""),
+            "images": images,
             "author": owner.get("name", "未知"),
             "author_id": str(owner.get("user_id", "")),
             "create_time": comment.get("create_time", ""),
