@@ -44,12 +44,6 @@ class ReportGenerator:
         date: str = None,
         group_names: dict = None,
     ) -> str:
-        """
-        生成Excel报告
-        - 多星球时按星球分页签
-        - 单星球时保持原有结构
-        返回文件路径
-        """
         date = date or datetime.now().strftime("%Y-%m-%d")
         filename = f"舆情分析_{date}.xlsx"
         filepath = os.path.join(self.output_dir, filename)
@@ -57,10 +51,8 @@ class ReportGenerator:
 
         try:
             wb = Workbook()
-            # 删除默认sheet，后面按需创建
             wb.remove(wb.active)
 
-            # 按 group_id 分组
             if "group_id" in analysis.columns:
                 group_ids = analysis["group_id"].unique().tolist()
             else:
@@ -68,24 +60,17 @@ class ReportGenerator:
                 analysis["group_id"] = "default"
 
             if len(group_ids) <= 1:
-                # 单星球：财经分析 + 全部帖子
                 gid = group_ids[0] if group_ids else "default"
-                name = group_names.get(gid, gid)
-                self._create_financial_sheet(wb, analysis, f"财经分析")
-                self._create_overview_sheet(wb, analysis, f"全部帖子")
+                name = group_names.get(gid, "")
+                self._create_financial_sheet(wb, analysis, "财经分析", gid=gid, group_name=name)
+                self._create_overview_sheet(wb, analysis, "全部帖子", gid=gid, group_name=name)
             else:
-                # 多星球：每个星球两个页签
                 for gid in group_ids:
                     name = group_names.get(gid, str(gid))
-                    # 页签名最长31字符
                     short_name = name[:12] if len(name) > 12 else name
                     group_df = analysis[analysis["group_id"] == gid]
-                    self._create_financial_sheet(
-                        wb, group_df, f"{short_name}-财经"
-                    )
-                    self._create_overview_sheet(
-                        wb, group_df, f"{short_name}-全部"
-                    )
+                    self._create_financial_sheet(wb, group_df, f"{short_name}-财经", gid=gid, group_name=name)
+                    self._create_overview_sheet(wb, group_df, f"{short_name}-全部", gid=gid, group_name=name)
 
             self._apply_styles(wb)
             wb.save(filepath)
@@ -95,11 +80,12 @@ class ReportGenerator:
             logger.error("Excel生成失败，降级到CSV: %s", e)
             return self._fallback_csv(analysis, date)
 
-    def _create_financial_sheet(
-        self, wb: Workbook, df: pd.DataFrame, title: str
-    ) -> None:
-        """创建财经分析Sheet"""
+    def _create_financial_sheet(self, wb, df, title, gid="", group_name=""):
         ws = wb.create_sheet(title[:31])
+
+        # 第一行：group_id 信息
+        ws.append([f"星球: {group_name}  (ID: {gid})" if group_name else f"ID: {gid}"])
+        # 第二行：字段名
         ws.append(FINANCIAL_HEADERS)
 
         if df.empty:
@@ -112,8 +98,7 @@ class ReportGenerator:
             return
 
         for _, row in financial_df.iterrows():
-            targets = row.get("targets", [])
-            targets_str = self._targets_to_str(targets)
+            targets_str = self._targets_to_str(row.get("targets", []))
             ws.append([
                 str(row.get("create_time", ""))[:19],
                 row.get("author", ""),
@@ -128,11 +113,12 @@ class ReportGenerator:
                 row.get("post_excerpt", "")[:200],
             ])
 
-    def _create_overview_sheet(
-        self, wb: Workbook, df: pd.DataFrame, title: str
-    ) -> None:
-        """创建全部帖子概览Sheet"""
+    def _create_overview_sheet(self, wb, df, title, gid="", group_name=""):
         ws = wb.create_sheet(title[:31])
+
+        # 第一行：group_id 信息
+        ws.append([f"星球: {group_name}  (ID: {gid})" if group_name else f"ID: {gid}"])
+        # 第二行：字段名
         ws.append(OVERVIEW_HEADERS)
 
         if df.empty:
@@ -140,8 +126,7 @@ class ReportGenerator:
             return
 
         for _, row in df.iterrows():
-            targets = row.get("targets", [])
-            targets_str = self._targets_to_str(targets)
+            targets_str = self._targets_to_str(row.get("targets", []))
             ws.append([
                 str(row.get("create_time", ""))[:19],
                 row.get("author", ""),
@@ -161,32 +146,37 @@ class ReportGenerator:
             return "、".join(str(t) for t in targets)
         return str(targets) if targets else ""
 
-    def _apply_styles(self, wb: Workbook) -> None:
-        """应用样式"""
+    def _apply_styles(self, wb):
         header_font = Font(bold=True, size=11, color="FFFFFF")
-        header_fill = PatternFill(
-            start_color="4472C4", end_color="4472C4", fill_type="solid"
-        )
+        header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
         header_alignment = Alignment(horizontal="center", vertical="center")
+        info_font = Font(bold=True, size=12, color="333333")
         thin_border = Border(
-            left=Side(style="thin"),
-            right=Side(style="thin"),
-            top=Side(style="thin"),
-            bottom=Side(style="thin"),
+            left=Side(style="thin"), right=Side(style="thin"),
+            top=Side(style="thin"), bottom=Side(style="thin"),
         )
 
         for ws in wb.worksheets:
+            # 第一行：星球信息样式
             for cell in ws[1]:
-                cell.font = header_font
-                cell.fill = header_fill
-                cell.alignment = header_alignment
-                cell.border = thin_border
+                cell.font = info_font
+                cell.alignment = Alignment(vertical="center")
 
-            for row_cells in ws.iter_rows(min_row=2, max_row=ws.max_row):
+            # 第二行：表头样式
+            if ws.max_row >= 2:
+                for cell in ws[2]:
+                    cell.font = header_font
+                    cell.fill = header_fill
+                    cell.alignment = header_alignment
+                    cell.border = thin_border
+
+            # 数据行样式（从第3行开始）
+            for row_cells in ws.iter_rows(min_row=3, max_row=ws.max_row):
                 for cell in row_cells:
                     cell.border = thin_border
                     cell.alignment = Alignment(vertical="center", wrap_text=True)
 
+            # 自动列宽
             for col in ws.columns:
                 max_length = 0
                 col_letter = col[0].column_letter
@@ -199,23 +189,22 @@ class ReportGenerator:
                         pass
                 ws.column_dimensions[col_letter].width = min(max_length + 4, 60)
 
+            # 看法列着色（从第3行开始）
             self._apply_outlook_colors(ws)
 
-    def _apply_outlook_colors(self, ws) -> None:
-        """为看法列添加颜色"""
-        header_row = [cell.value for cell in ws[1]]
+    def _apply_outlook_colors(self, ws):
+        if ws.max_row < 2:
+            return
+        header_row = [cell.value for cell in ws[2]]
         for idx, h in enumerate(header_row):
             if h == "看法":
-                for row_cells in ws.iter_rows(min_row=2, max_row=ws.max_row):
+                for row_cells in ws.iter_rows(min_row=3, max_row=ws.max_row):
                     cell = row_cells[idx]
                     color = OUTLOOK_COLORS.get(str(cell.value or ""))
                     if color:
-                        cell.fill = PatternFill(
-                            start_color=color, end_color=color, fill_type="solid"
-                        )
+                        cell.fill = PatternFill(start_color=color, end_color=color, fill_type="solid")
 
-    def _fallback_csv(self, df: pd.DataFrame, date: str) -> str:
-        """降级到CSV"""
+    def _fallback_csv(self, df, date):
         filename = f"舆情分析_{date}.csv"
         filepath = os.path.join(self.output_dir, filename)
         df.to_csv(filepath, index=False, encoding="utf-8-sig")
