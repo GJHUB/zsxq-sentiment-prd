@@ -7,6 +7,7 @@ from datetime import datetime
 import pandas as pd
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.worksheet.filters import AutoFilter
 
 from .config import get_config
 
@@ -19,14 +20,9 @@ OUTLOOK_COLORS = {
     "分歧": "B4C6E7",
 }
 
-FINANCIAL_HEADERS = [
-    "时间", "作者", "群主帖子", "金融产品", "具体标的",
-    "看法", "群主看法", "群主理由", "原因分析", "核心观点", "帖子摘要",
-]
-
-OVERVIEW_HEADERS = [
-    "时间", "作者", "群主帖子", "是否财经", "金融产品",
-    "具体标的", "看法", "群主看法", "核心观点", "评论数",
+HEADERS = [
+    "时间", "作者", "群主帖子", "是否财经", "金融产品", "具体标的",
+    "看法", "群主看法", "群主理由", "原因分析", "核心观点", "评论数", "帖子摘要",
 ]
 
 
@@ -37,13 +33,7 @@ class ReportGenerator:
         self.output_dir = output_dir or get_config("output_dir", "output")
         os.makedirs(self.output_dir, exist_ok=True)
 
-    def generate(
-        self,
-        analysis: pd.DataFrame,
-        topics: list[dict],
-        date: str = None,
-        group_names: dict = None,
-    ) -> str:
+    def generate(self, analysis, topics, date=None, group_names=None):
         date = date or datetime.now().strftime("%Y-%m-%d")
         filename = f"舆情分析_{date}.xlsx"
         filepath = os.path.join(self.output_dir, filename)
@@ -59,18 +49,11 @@ class ReportGenerator:
                 group_ids = ["default"]
                 analysis["group_id"] = "default"
 
-            if len(group_ids) <= 1:
-                gid = group_ids[0] if group_ids else "default"
-                name = group_names.get(gid, "")
-                self._create_financial_sheet(wb, analysis, "财经分析", gid=gid, group_name=name)
-                self._create_overview_sheet(wb, analysis, "全部帖子", gid=gid, group_name=name)
-            else:
-                for gid in group_ids:
-                    name = group_names.get(gid, str(gid))
-                    short_name = name[:12] if len(name) > 12 else name
-                    group_df = analysis[analysis["group_id"] == gid]
-                    self._create_financial_sheet(wb, group_df, f"{short_name}-财经", gid=gid, group_name=name)
-                    self._create_overview_sheet(wb, group_df, f"{short_name}-全部", gid=gid, group_name=name)
+            for gid in group_ids:
+                name = group_names.get(gid, str(gid))
+                short_name = name[:14] if len(name) > 14 else name
+                group_df = analysis[analysis["group_id"] == gid]
+                self._create_sheet(wb, group_df, short_name, gid=gid, group_name=name)
 
             self._apply_styles(wb)
             wb.save(filepath)
@@ -80,46 +63,13 @@ class ReportGenerator:
             logger.error("Excel生成失败，降级到CSV: %s", e)
             return self._fallback_csv(analysis, date)
 
-    def _create_financial_sheet(self, wb, df, title, gid="", group_name=""):
+    def _create_sheet(self, wb, df, title, gid="", group_name=""):
         ws = wb.create_sheet(title[:31])
 
-        # 第一行：group_id 信息
+        # 第一行：星球信息
         ws.append([f"星球: {group_name}  (ID: {gid})" if group_name else f"ID: {gid}"])
         # 第二行：字段名
-        ws.append(FINANCIAL_HEADERS)
-
-        if df.empty:
-            ws.append(["暂无数据"])
-            return
-
-        financial_df = df[df["is_financial"] == True].copy()
-        if financial_df.empty:
-            ws.append(["无财经相关内容"])
-            return
-
-        for _, row in financial_df.iterrows():
-            targets_str = self._targets_to_str(row.get("targets", []))
-            ws.append([
-                str(row.get("create_time", ""))[:19],
-                row.get("author", ""),
-                "是" if row.get("is_owner_post") else "否",
-                row.get("product_type", ""),
-                targets_str,
-                row.get("outlook", ""),
-                row.get("owner_outlook", "无"),
-                row.get("owner_reason", "无"),
-                row.get("reason", ""),
-                row.get("summary", ""),
-                row.get("post_excerpt", "")[:200],
-            ])
-
-    def _create_overview_sheet(self, wb, df, title, gid="", group_name=""):
-        ws = wb.create_sheet(title[:31])
-
-        # 第一行：group_id 信息
-        ws.append([f"星球: {group_name}  (ID: {gid})" if group_name else f"ID: {gid}"])
-        # 第二行：字段名
-        ws.append(OVERVIEW_HEADERS)
+        ws.append(HEADERS)
 
         if df.empty:
             ws.append(["暂无数据"])
@@ -127,18 +77,29 @@ class ReportGenerator:
 
         for _, row in df.iterrows():
             targets_str = self._targets_to_str(row.get("targets", []))
+            is_financial = "是" if row.get("is_financial") else "否"
             ws.append([
                 str(row.get("create_time", ""))[:19],
                 row.get("author", ""),
                 "是" if row.get("is_owner_post") else "否",
-                "是" if row.get("is_financial") else "否",
+                is_financial,
                 row.get("product_type", ""),
                 targets_str,
                 row.get("outlook", ""),
                 row.get("owner_outlook", "无"),
+                row.get("owner_reason", "无"),
+                row.get("reason", ""),
                 row.get("summary", ""),
                 row.get("comments_count", 0),
+                row.get("post_excerpt", "")[:200],
             ])
+
+        # 添加自动筛选（基于第二行表头，范围到最后一行）
+        last_col_letter = chr(ord("A") + len(HEADERS) - 1)
+        ws.auto_filter.ref = f"A2:{last_col_letter}{ws.max_row}"
+        # 默认筛选：过滤掉非财经（只显示"是"）
+        # "是否财经"是第4列（index 3）
+        ws.auto_filter.add_filter_column(3, ["是"])
 
     @staticmethod
     def _targets_to_str(targets) -> str:
@@ -157,12 +118,12 @@ class ReportGenerator:
         )
 
         for ws in wb.worksheets:
-            # 第一行：星球信息样式
+            # 第一行：星球信息
             for cell in ws[1]:
                 cell.font = info_font
                 cell.alignment = Alignment(vertical="center")
 
-            # 第二行：表头样式
+            # 第二行：表头
             if ws.max_row >= 2:
                 for cell in ws[2]:
                     cell.font = header_font
@@ -170,7 +131,7 @@ class ReportGenerator:
                     cell.alignment = header_alignment
                     cell.border = thin_border
 
-            # 数据行样式（从第3行开始）
+            # 数据行
             for row_cells in ws.iter_rows(min_row=3, max_row=ws.max_row):
                 for cell in row_cells:
                     cell.border = thin_border
@@ -189,7 +150,6 @@ class ReportGenerator:
                         pass
                 ws.column_dimensions[col_letter].width = min(max_length + 4, 60)
 
-            # 看法列着色（从第3行开始）
             self._apply_outlook_colors(ws)
 
     def _apply_outlook_colors(self, ws):

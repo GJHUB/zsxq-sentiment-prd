@@ -126,6 +126,14 @@ zsxq-sentiment/
 | WECOM_WEBHOOK | ❌ | 企业微信机器人webhook |
 | ZSXQ_GROUP_OWNER_ID | ❌ | 群主user_id（用于标注群主观点） |
 
+### 如何获取 Group ID
+
+1. 在浏览器中打开 [知识星球网页版](https://wx.zsxq.com)
+2. 进入你要爬取的星球
+3. 查看浏览器地址栏，URL 格式为 `https://wx.zsxq.com/group/xxxxxxxxxx`
+4. 其中 `xxxxxxxxxx` 就是 Group ID
+5. 多个星球用逗号分隔填入 `.env`，例如：`ZSXQ_GROUP_ID=28888221524121,15552521555222`
+
 ## 免责声明
 
 ⚠️ 本工具仅供个人学习研究使用，请遵守知识星球用户协议，不得用于商业用途。
