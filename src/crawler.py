@@ -1,10 +1,12 @@
 """爬虫模块 - 知识星球内容抓取"""
 
 import asyncio
+import json
 import logging
 import random
 import time
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Optional
 
 import requests
@@ -17,9 +19,11 @@ from tenacity import (
 )
 from urllib3.util.retry import Retry
 
-from .config import get_config
+from .config import get_config, BASE_DIR
 
 logger = logging.getLogger(__name__)
+
+LAST_FETCH_PATH = BASE_DIR / "data" / "last_fetch.json"
 
 
 class RateLimiter:
@@ -47,12 +51,47 @@ class ZsxqCrawler:
     BASE_URL = "https://api.zsxq.com/v2"
 
     def __init__(self, group_id: str = None, cookie: dict = None):
-        self.group_id = group_id or get_config("group_id")
+        self.group_id = group_id or ""
         self.cookie = cookie or {}
         self.rate_limiter = RateLimiter(
             requests_per_minute=get_config("requests_per_minute", 20)
         )
         self.session = self._create_session()
+
+    @staticmethod
+    def load_last_fetch() -> dict:
+        """加载各星球的最后爬取时间 {group_id: "2026-02-19T18:00:00.000+0800"}"""
+        if LAST_FETCH_PATH.exists():
+            try:
+                with open(LAST_FETCH_PATH, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception:
+                pass
+        return {}
+
+    @staticmethod
+    def save_last_fetch(data: dict) -> None:
+        """保存各星球的最后爬取时间"""
+        LAST_FETCH_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(LAST_FETCH_PATH, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+
+    def update_last_fetch(self, topics: list[dict]) -> None:
+        """根据帖子列表更新该星球的最后爬取时间"""
+        if not topics:
+            return
+        # 找最新的 create_time
+        latest = max(t.get("create_time", "") for t in topics)
+        if latest:
+            data = self.load_last_fetch()
+            data[self.group_id] = latest
+            self.save_last_fetch(data)
+            logger.info("更新星球 %s 最后爬取时间: %s", self.group_id, latest)
+
+    def get_last_fetch_time(self) -> Optional[str]:
+        """获取该星球的最后爬取时间"""
+        data = self.load_last_fetch()
+        return data.get(self.group_id)
 
     def _create_session(self) -> requests.Session:
         """创建带重试的Session"""

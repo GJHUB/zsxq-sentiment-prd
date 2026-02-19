@@ -1,9 +1,11 @@
 """知识星球股票舆情分析器 - 主入口
 
 用法：
-  python main.py fetch --start-date 2026-02-14          # 只爬取数据
-  python main.py analyze --data data/topics_xxx.json     # 只分析数据
+  python main.py fetch --start-date 2026-02-14          # 爬取数据（所有星球）
+  python main.py fetch                                   # 增量爬取（从上次位置继续）
+  python main.py analyze --data data/topics_xxx.json     # 分析数据
   python main.py run --start-date 2026-02-14             # 爬取+分析一条龙
+  python main.py run                                     # 增量爬取+分析
 """
 
 import argparse
@@ -41,7 +43,7 @@ def setup_logging():
 
 
 async def do_fetch(args) -> str:
-    """爬取帖子和评论，保存到JSON"""
+    """爬取所有星球的帖子和评论，保存到JSON"""
     logger = logging.getLogger(__name__)
     notifier = WeChatNotifier()
     auth = AuthManager(
@@ -56,32 +58,65 @@ async def do_fetch(args) -> str:
         logger.error("Cookie获取失败，退出")
         return ""
 
-    # 爬取
-    crawler = ZsxqCrawler(group_id=get_config("group_id"), cookie=cookie)
+    group_ids = get_config("group_ids", [])
+    if not group_ids:
+        logger.error("未配置 ZSXQ_GROUP_ID")
+        return ""
 
-    end_date = args.end_date or datetime.now().strftime("%Y-%m-%d")
-    if args.start_date:
-        topics = await crawler.fetch_date_range(args.start_date, end_date)
-        date_label = f"{args.start_date}_to_{end_date}"
-    else:
-        topics = await crawler.fetch_all_today()
-        date_label = datetime.now().strftime("%Y-%m-%d")
+    all_topics = []
+    end_date = getattr(args, "end_date", None) or datetime.now().strftime("%Y-%m-%d")
 
-    if not topics:
-        notifier.send_text("📭 指定日期范围内暂无新内容")
-        logger.info("暂无新内容")
+    for gid in group_ids:
+        logger.info("=== 爬取星球: %s ===", gid)
+        crawler = ZsxqCrawler(group_id=gid, cookie=cookie)
+
+        # 确定起始时间：优先命令行参数，其次上次爬取位置
+        start_date = getattr(args, "start_date", None)
+        if not start_date:
+            last_time = crawler.get_last_fetch_time()
+            if last_time:
+                # 从上次最新时间继续
+                try:
+                    dt = datetime.strptime(last_time, "%Y-%m-%dT%H:%M:%S.%f%z")
+                    start_date = dt.strftime("%Y-%m-%d")
+                    logger.info("星球 %s 增量爬取，从 %s 开始", gid, last_time)
+                except ValueError:
+                    start_date = datetime.now().strftime("%Y-%m-%d")
+            else:
+                start_date = datetime.now().strftime("%Y-%m-%d")
+
+        topics = await crawler.fetch_date_range(start_date, end_date)
+
+        if topics:
+            # 标记来源星球
+            for t in topics:
+                t["group_id"] = gid
+            crawler.update_last_fetch(topics)
+            all_topics.extend(topics)
+            logger.info("星球 %s: 获取 %d 条帖子", gid, len(topics))
+        else:
+            logger.info("星球 %s: 暂无新内容", gid)
+
+    if not all_topics:
+        notifier.send_text("📭 所有星球暂无新内容")
         return ""
 
     # 保存到JSON
     data_dir = Path("data")
     data_dir.mkdir(parents=True, exist_ok=True)
+    date_label = f"{start_date}_to_{end_date}" if len(group_ids) == 1 else end_date
     output_path = str(data_dir / f"topics_{date_label}.json")
 
     with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(topics, f, ensure_ascii=False, indent=2)
+        json.dump(all_topics, f, ensure_ascii=False, indent=2)
 
-    logger.info("数据已保存: %s（%d 条帖子）", output_path, len(topics))
-    notifier.send_text(f"📥 数据爬取完成：{len(topics)} 条帖子\n📄 文件: {output_path}")
+    logger.info("数据已保存: %s（%d 条帖子）", output_path, len(all_topics))
+    notifier.send_text(
+        f"📥 数据爬取完成\n"
+        f"📊 星球数: {len(group_ids)}\n"
+        f"📝 帖子数: {len(all_topics)}\n"
+        f"📄 文件: {output_path}"
+    )
     return output_path
 
 
@@ -90,7 +125,6 @@ async def do_analyze(args) -> str:
     logger = logging.getLogger(__name__)
     notifier = WeChatNotifier()
 
-    # 加载数据
     data_path = args.data
     if not Path(data_path).exists():
         logger.error("数据文件不存在: %s", data_path)
@@ -113,14 +147,13 @@ async def do_analyze(args) -> str:
         return ""
 
     # 从文件名提取日期标签
-    stem = Path(data_path).stem  # topics_2026-02-14_to_2026-02-19
+    stem = Path(data_path).stem
     date_label = stem.replace("topics_", "") or datetime.now().strftime("%Y-%m-%d")
 
     # 生成报告
     reporter = ReportGenerator()
     report_path = reporter.generate(analysis, topics, date=date_label)
 
-    # 统计
     financial_count = len(analysis[analysis["is_financial"] == True]) if not analysis.empty else 0
 
     summary = (
@@ -142,12 +175,10 @@ async def do_run(args):
     logger.info("=== 知识星球舆情分析开始 ===")
 
     try:
-        # 1. 爬取
         data_path = await do_fetch(args)
         if not data_path:
             return
 
-        # 2. 分析
         args.data = data_path
         await do_analyze(args)
 
@@ -163,21 +194,20 @@ def main():
     subparsers = parser.add_subparsers(dest="command", help="子命令")
 
     # fetch
-    fetch_parser = subparsers.add_parser("fetch", help="爬取帖子和评论")
-    fetch_parser.add_argument("--start-date", type=str, help="起始日期 YYYY-MM-DD")
-    fetch_parser.add_argument("--end-date", type=str, help="结束日期 YYYY-MM-DD")
+    fetch_p = subparsers.add_parser("fetch", help="爬取帖子和评论")
+    fetch_p.add_argument("--start-date", type=str, help="起始日期 YYYY-MM-DD（不传则增量）")
+    fetch_p.add_argument("--end-date", type=str, help="结束日期 YYYY-MM-DD")
 
     # analyze
-    analyze_parser = subparsers.add_parser("analyze", help="分析已爬取的数据")
-    analyze_parser.add_argument("--data", type=str, required=True, help="数据JSON文件路径")
+    analyze_p = subparsers.add_parser("analyze", help="分析已爬取的数据")
+    analyze_p.add_argument("--data", type=str, required=True, help="数据JSON文件路径")
 
-    # run (fetch + analyze)
-    run_parser = subparsers.add_parser("run", help="爬取+分析一条龙")
-    run_parser.add_argument("--start-date", type=str, help="起始日期 YYYY-MM-DD")
-    run_parser.add_argument("--end-date", type=str, help="结束日期 YYYY-MM-DD")
+    # run
+    run_p = subparsers.add_parser("run", help="爬取+分析一条龙")
+    run_p.add_argument("--start-date", type=str, help="起始日期 YYYY-MM-DD（不传则增量）")
+    run_p.add_argument("--end-date", type=str, help="结束日期 YYYY-MM-DD")
 
     args = parser.parse_args()
-
     setup_logging()
 
     if args.command == "fetch":
@@ -187,7 +217,6 @@ def main():
     elif args.command == "run":
         asyncio.run(do_run(args))
     else:
-        # 兼容旧用法：无子命令时默认 run
         parser.print_help()
 
 

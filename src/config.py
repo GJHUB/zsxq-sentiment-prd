@@ -11,8 +11,8 @@ load_dotenv()
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 CONFIG = {
-    # 知识星球
-    "group_id": os.getenv("ZSXQ_GROUP_ID", ""),
+    # 知识星球（多个用逗号分隔）
+    "group_ids": [g.strip() for g in os.getenv("ZSXQ_GROUP_ID", "").split(",") if g.strip()],
     "group_owner_id": os.getenv("ZSXQ_GROUP_OWNER_ID", "585551255484544"),
 
     # AI API
