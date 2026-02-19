@@ -19,6 +19,16 @@ OUTLOOK_COLORS = {
     "分歧": "B4C6E7",
 }
 
+FINANCIAL_HEADERS = [
+    "时间", "作者", "群主帖子", "金融产品", "具体标的",
+    "看法", "群主看法", "群主理由", "原因分析", "核心观点", "帖子摘要",
+]
+
+OVERVIEW_HEADERS = [
+    "时间", "作者", "群主帖子", "是否财经", "金融产品",
+    "具体标的", "看法", "群主看法", "核心观点", "评论数",
+]
+
 
 class ReportGenerator:
     """Excel报告生成器"""
@@ -32,21 +42,51 @@ class ReportGenerator:
         analysis: pd.DataFrame,
         topics: list[dict],
         date: str = None,
+        group_names: dict = None,
     ) -> str:
         """
         生成Excel报告
-        - Sheet1: 财经相关帖子分析
-        - Sheet2: 全部帖子概览
+        - 多星球时按星球分页签
+        - 单星球时保持原有结构
         返回文件路径
         """
         date = date or datetime.now().strftime("%Y-%m-%d")
         filename = f"舆情分析_{date}.xlsx"
         filepath = os.path.join(self.output_dir, filename)
+        group_names = group_names or {}
 
         try:
             wb = Workbook()
-            self._create_financial_sheet(wb, analysis)
-            self._create_overview_sheet(wb, analysis)
+            # 删除默认sheet，后面按需创建
+            wb.remove(wb.active)
+
+            # 按 group_id 分组
+            if "group_id" in analysis.columns:
+                group_ids = analysis["group_id"].unique().tolist()
+            else:
+                group_ids = ["default"]
+                analysis["group_id"] = "default"
+
+            if len(group_ids) <= 1:
+                # 单星球：财经分析 + 全部帖子
+                gid = group_ids[0] if group_ids else "default"
+                name = group_names.get(gid, gid)
+                self._create_financial_sheet(wb, analysis, f"财经分析")
+                self._create_overview_sheet(wb, analysis, f"全部帖子")
+            else:
+                # 多星球：每个星球两个页签
+                for gid in group_ids:
+                    name = group_names.get(gid, str(gid))
+                    # 页签名最长31字符
+                    short_name = name[:12] if len(name) > 12 else name
+                    group_df = analysis[analysis["group_id"] == gid]
+                    self._create_financial_sheet(
+                        wb, group_df, f"{short_name}-财经"
+                    )
+                    self._create_overview_sheet(
+                        wb, group_df, f"{short_name}-全部"
+                    )
+
             self._apply_styles(wb)
             wb.save(filepath)
             logger.info("报告已生成: %s", filepath)
@@ -55,13 +95,12 @@ class ReportGenerator:
             logger.error("Excel生成失败，降级到CSV: %s", e)
             return self._fallback_csv(analysis, date)
 
-    def _create_financial_sheet(self, wb: Workbook, df: pd.DataFrame) -> None:
-        """创建财经分析Sheet（仅财经相关帖子）"""
-        ws = wb.active
-        ws.title = "财经分析"
-
-        headers = ["时间", "作者", "群主帖子", "金融产品", "具体标的", "看法", "群主看法", "群主理由", "原因分析", "核心观点", "帖子摘要"]
-        ws.append(headers)
+    def _create_financial_sheet(
+        self, wb: Workbook, df: pd.DataFrame, title: str
+    ) -> None:
+        """创建财经分析Sheet"""
+        ws = wb.create_sheet(title[:31])
+        ws.append(FINANCIAL_HEADERS)
 
         if df.empty:
             ws.append(["暂无数据"])
@@ -74,11 +113,7 @@ class ReportGenerator:
 
         for _, row in financial_df.iterrows():
             targets = row.get("targets", [])
-            if isinstance(targets, list):
-                targets_str = "、".join(str(t) for t in targets)
-            else:
-                targets_str = str(targets)
-
+            targets_str = self._targets_to_str(targets)
             ws.append([
                 str(row.get("create_time", ""))[:19],
                 row.get("author", ""),
@@ -93,12 +128,12 @@ class ReportGenerator:
                 row.get("post_excerpt", "")[:200],
             ])
 
-    def _create_overview_sheet(self, wb: Workbook, df: pd.DataFrame) -> None:
+    def _create_overview_sheet(
+        self, wb: Workbook, df: pd.DataFrame, title: str
+    ) -> None:
         """创建全部帖子概览Sheet"""
-        ws = wb.create_sheet("全部帖子")
-
-        headers = ["时间", "作者", "群主帖子", "是否财经", "金融产品", "具体标的", "看法", "群主看法", "核心观点", "评论数"]
-        ws.append(headers)
+        ws = wb.create_sheet(title[:31])
+        ws.append(OVERVIEW_HEADERS)
 
         if df.empty:
             ws.append(["暂无数据"])
@@ -106,11 +141,7 @@ class ReportGenerator:
 
         for _, row in df.iterrows():
             targets = row.get("targets", [])
-            if isinstance(targets, list):
-                targets_str = "、".join(str(t) for t in targets)
-            else:
-                targets_str = str(targets)
-
+            targets_str = self._targets_to_str(targets)
             ws.append([
                 str(row.get("create_time", ""))[:19],
                 row.get("author", ""),
@@ -123,6 +154,12 @@ class ReportGenerator:
                 row.get("summary", ""),
                 row.get("comments_count", 0),
             ])
+
+    @staticmethod
+    def _targets_to_str(targets) -> str:
+        if isinstance(targets, list):
+            return "、".join(str(t) for t in targets)
+        return str(targets) if targets else ""
 
     def _apply_styles(self, wb: Workbook) -> None:
         """应用样式"""
@@ -145,12 +182,11 @@ class ReportGenerator:
                 cell.alignment = header_alignment
                 cell.border = thin_border
 
-            for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
-                for cell in row:
+            for row_cells in ws.iter_rows(min_row=2, max_row=ws.max_row):
+                for cell in row_cells:
                     cell.border = thin_border
                     cell.alignment = Alignment(vertical="center", wrap_text=True)
 
-            # 自动列宽
             for col in ws.columns:
                 max_length = 0
                 col_letter = col[0].column_letter
@@ -163,29 +199,20 @@ class ReportGenerator:
                         pass
                 ws.column_dimensions[col_letter].width = min(max_length + 4, 60)
 
-            # 看法列着色
             self._apply_outlook_colors(ws)
 
     def _apply_outlook_colors(self, ws) -> None:
         """为看法列添加颜色"""
         header_row = [cell.value for cell in ws[1]]
-        outlook_col = None
         for idx, h in enumerate(header_row):
             if h == "看法":
-                outlook_col = idx
-                break
-
-        if outlook_col is None:
-            return
-
-        for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
-            cell = row[outlook_col]
-            val = str(cell.value or "")
-            color = OUTLOOK_COLORS.get(val)
-            if color:
-                cell.fill = PatternFill(
-                    start_color=color, end_color=color, fill_type="solid"
-                )
+                for row_cells in ws.iter_rows(min_row=2, max_row=ws.max_row):
+                    cell = row_cells[idx]
+                    color = OUTLOOK_COLORS.get(str(cell.value or ""))
+                    if color:
+                        cell.fill = PatternFill(
+                            start_color=color, end_color=color, fill_type="solid"
+                        )
 
     def _fallback_csv(self, df: pd.DataFrame, date: str) -> str:
         """降级到CSV"""

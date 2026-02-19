@@ -64,11 +64,30 @@ async def do_fetch(args) -> str:
         return ""
 
     all_topics = []
+    group_names = {}  # {group_id: group_name}
     end_date = getattr(args, "end_date", None) or datetime.now().strftime("%Y-%m-%d")
 
     for gid in group_ids:
         logger.info("=== 爬取星球: %s ===", gid)
         crawler = ZsxqCrawler(group_id=gid, cookie=cookie)
+
+        # 获取星球名称
+        try:
+            import requests as req
+            cookie_str = "; ".join(f"{k}={v}" for k, v in cookie.items())
+            resp = req.get(
+                f"https://api.zsxq.com/v2/groups/{gid}",
+                headers={"Cookie": cookie_str, "User-Agent": "Mozilla/5.0",
+                         "Origin": "https://wx.zsxq.com", "Referer": "https://wx.zsxq.com/"},
+                timeout=10,
+            )
+            gdata = resp.json()
+            if gdata.get("succeeded"):
+                gname = gdata["resp_data"]["group"].get("name", gid)
+                group_names[gid] = gname
+                logger.info("星球名称: %s", gname)
+        except Exception:
+            group_names[gid] = gid
 
         # 确定起始时间：优先命令行参数，其次上次爬取位置
         start_date = getattr(args, "start_date", None)
@@ -108,7 +127,7 @@ async def do_fetch(args) -> str:
     output_path = str(data_dir / f"topics_{date_label}.json")
 
     with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(all_topics, f, ensure_ascii=False, indent=2)
+        json.dump({"group_names": group_names, "topics": all_topics}, f, ensure_ascii=False, indent=2)
 
     logger.info("数据已保存: %s（%d 条帖子）", output_path, len(all_topics))
     notifier.send_text(
@@ -131,7 +150,15 @@ async def do_analyze(args) -> str:
         return ""
 
     with open(data_path, "r", encoding="utf-8") as f:
-        topics = json.load(f)
+        raw = json.load(f)
+
+    # 兼容新旧格式
+    if isinstance(raw, dict) and "topics" in raw:
+        topics = raw["topics"]
+        group_names = raw.get("group_names", {})
+    else:
+        topics = raw
+        group_names = {}
 
     logger.info("加载了 %d 条帖子", len(topics))
 
@@ -152,7 +179,7 @@ async def do_analyze(args) -> str:
 
     # 生成报告
     reporter = ReportGenerator()
-    report_path = reporter.generate(analysis, topics, date=date_label)
+    report_path = reporter.generate(analysis, topics, date=date_label, group_names=group_names)
 
     financial_count = len(analysis[analysis["is_financial"] == True]) if not analysis.empty else 0
 

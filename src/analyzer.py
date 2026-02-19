@@ -105,6 +105,7 @@ class SentimentAnalyzer:
                     "create_time": topic.get("create_time", ""),
                     "post_excerpt": post_text[:300],
                     "comments_count": len(comments),
+                    "group_id": topic.get("group_id", ""),
                 })
                 continue
 
@@ -155,6 +156,7 @@ class SentimentAnalyzer:
                 "create_time": topic.get("create_time", ""),
                 "post_excerpt": post_text[:300],
                 "comments_count": len(comments),
+                "group_id": topic.get("group_id", ""),
             })
             results.append(analysis)
 
